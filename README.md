@@ -127,7 +127,8 @@ M_{m,b} = {
   y_m
 }
 
-h_{m,b} = Hash(M_{m,b})```
+h_{m,b} = Hash(M_{m,b})
+```
 
 #Related Documentation
 
