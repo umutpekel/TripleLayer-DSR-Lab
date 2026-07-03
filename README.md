@@ -130,8 +130,6 @@ M_{m,b} = {
 h_{m,b} = Hash(M_{m,b})
 ```
 
-#Related Documentation
+## Related Documentation
 
-See:
-
-docs/Algorithm1_Monthly_Settlement.md
+See `docs/Algorithm1_Monthly_Settlement.md` for the pseudocode version of the monthly settlement algorithm.
