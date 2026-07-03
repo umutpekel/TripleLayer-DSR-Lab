@@ -1,19 +1,17 @@
-
 /// Conceptual Move prototype for Algorithm 1:
 /// Monthly Oracle-Prepared Settlement for Equal-Unit PRTs.
 ///
 /// The oracle prepares the monthly settlement bundle off-chain.
-/// The on-chain function routes stablecoin payout according to each PRT's
+/// The on-chain function routes settlement-asset payout according to each PRT's
 /// yield_beneficiary field.
 ///
 /// This module is not production-grade infrastructure. It is intended to
 /// demonstrate the paper's settlement semantics.
 
-
 module prt_framework::layer3_settlement {
-    use sui::object::{Self, UID, ID};
+    use sui::object::{UID, ID};
     use sui::transfer;
-    use sui::tx_context::{Self, TxContext};
+    use sui::tx_context::TxContext;
     use sui::coin::{Self, Coin};
 
     /// Layer 2: Equal-unit Programmable Rights Token.
@@ -21,14 +19,22 @@ module prt_framework::layer3_settlement {
     struct PRT has key, store {
         id: UID,
         asset_anchor: ID,
-        owner: address,              // Holder of the PRT object
-        yield_beneficiary: address,  // Payout address; equals owner if no separate beneficiary is designated
+        owner: address,
+        yield_beneficiary: address,
         active: bool,
     }
 
     /// Capability proving that the caller is an authorized settlement oracle.
     struct OracleCap has key, store {
-        id: UID
+        id: UID,
+    }
+
+    /// Asset-level settlement state.
+    /// This object stores the hash of the latest accepted settlement bundle.
+    struct SettlementState has key, store {
+        id: UID,
+        asset_anchor: ID,
+        last_accepted_bundle_hash: vector<u8>,
     }
 
     /// Minimal monthly settlement bundle prepared by the oracle.
@@ -38,6 +44,9 @@ module prt_framework::layer3_settlement {
         asset_anchor: ID,
         epoch_month: u64,
         batch_id: u64,
+
+        previous_bundle_hash: vector<u8>,
+        bundle_hash: vector<u8>,
 
         metered_generation_kwh: u64,
         fit_rate_cents: u64,
@@ -57,13 +66,14 @@ module prt_framework::layer3_settlement {
     /// identity registry, or jurisdiction-specific compliance provider.
     struct ComplianceRegistry has key, store {
         id: UID,
-        // Placeholder only.
     }
 
     const E_ALREADY_EXECUTED: u64 = 1;
     const E_WRONG_ANCHOR: u64 = 2;
     const E_INACTIVE_PRT: u64 = 3;
     const E_ZERO_YIELD: u64 = 4;
+    const E_WRONG_PREVIOUS_HASH: u64 = 5;
+    const E_STATE_ANCHOR_MISMATCH: u64 = 6;
 
     /// Placeholder compliance check.
     /// Replace with registry lookup, transfer-agent check, or deny-list logic.
@@ -76,28 +86,46 @@ module prt_framework::layer3_settlement {
         true
     }
 
-    /// ALGORITHM 1: Monthly Oracle-Prepared Settlement for Equal-Unit PRTs.
+    /// ALGORITHM 1:
+    /// Monthly Oracle-Prepared Settlement for Equal-Unit PRTs.
     ///
     /// The oracle prepares the bundle off-chain:
     /// generation -> FIT revenue -> OPEX/tax/withholding deduction
     /// -> net distributable revenue -> monthly yield per equal-unit PRT.
     ///
-    /// The chain verifies authorization and routes stablecoin payout according
-    /// to each PRT's yield_beneficiary field.
+    /// The bundle also carries previous_bundle_hash, which must match the
+    /// last accepted settlement hash stored in SettlementState.
     public entry fun execute_prt_settlement<T>(
         _oracle_cap: &OracleCap,
+        state: &SettlementState,
         registry: &ComplianceRegistry,
         bundle: &mut MonthlySettlementBundle,
         revenue_pool: &mut Coin<T>,
         prt: &PRT,
         ctx: &mut TxContext
     ) {
-        // Required protocol checks are intentionally kept compact:
-        // oracle authority is represented by OracleCap;
-        // replay protection is represented by bundle.executed;
-        // asset-anchor match and active PRT state are checked below.
+        // Replay protection.
         assert!(!bundle.executed, E_ALREADY_EXECUTED);
-        assert!(prt.asset_anchor == bundle.asset_anchor, E_WRONG_ANCHOR);
+
+        // Settlement state and bundle must refer to the same asset anchor.
+        assert!(
+            state.asset_anchor == bundle.asset_anchor,
+            E_STATE_ANCHOR_MISMATCH
+        );
+
+        // The PRT must be linked to the same asset anchor as the bundle.
+        assert!(
+            prt.asset_anchor == bundle.asset_anchor,
+            E_WRONG_ANCHOR
+        );
+
+        // Previous accepted bundle hash must match.
+        assert!(
+            bundle.previous_bundle_hash == state.last_accepted_bundle_hash,
+            E_WRONG_PREVIOUS_HASH
+        );
+
+        // PRT and yield checks.
         assert!(prt.active, E_INACTIVE_PRT);
         assert!(bundle.active_prt_count > 0, E_ZERO_YIELD);
         assert!(bundle.monthly_yield_per_prt > 0, E_ZERO_YIELD);
@@ -105,12 +133,19 @@ module prt_framework::layer3_settlement {
         let beneficiary = prt.yield_beneficiary;
         let amount = bundle.monthly_yield_per_prt;
 
-        if (passes_aml_kyc(registry, beneficiary, bundle.asset_anchor, bundle.epoch_month)) {
+        if (
+            passes_aml_kyc(
+                registry,
+                beneficiary,
+                bundle.asset_anchor,
+                bundle.epoch_month
+            )
+        ) {
             let payout = coin::split(revenue_pool, amount, ctx);
             transfer::public_transfer(payout, beneficiary);
         } else {
             // In a full implementation, this branch should credit an escrow object
-            // keyed by (asset_anchor, epoch_month, prt_id, beneficiary).
+            // keyed by (asset_anchor, epoch_month, batch_id, prt_id, beneficiary).
             // It is left as a placeholder in this minimal prototype.
         };
     }
@@ -121,11 +156,27 @@ module prt_framework::layer3_settlement {
     /// In a production implementation, this should be called only after all
     /// PRTs in the batch have been processed, or replaced by a batch-level
     /// settlement object with per-batch execution status.
+    ///
+    /// Once the batch is marked as executed, bundle_hash becomes the latest
+    /// accepted settlement hash for the asset.
     public entry fun mark_batch_executed(
         _oracle_cap: &OracleCap,
+        state: &mut SettlementState,
         bundle: &mut MonthlySettlementBundle
     ) {
         assert!(!bundle.executed, E_ALREADY_EXECUTED);
+
+        assert!(
+            state.asset_anchor == bundle.asset_anchor,
+            E_STATE_ANCHOR_MISMATCH
+        );
+
+        assert!(
+            bundle.previous_bundle_hash == state.last_accepted_bundle_hash,
+            E_WRONG_PREVIOUS_HASH
+        );
+
         bundle.executed = true;
+        state.last_accepted_bundle_hash = copy bundle.bundle_hash;
     }
 }
