@@ -132,4 +132,4 @@ h_{m,b} = Hash(M_{m,b})
 
 ## Related Documentation
 
-See `docs/Algorithm1_Monthly_Settlement.md` for the pseudocode version of the monthly settlement algorithm.
+See [Algorithm1_Monthly_Settlement.md](docs/Algorithm1_Monthly_Settlement.md) for the pseudocode version of the monthly settlement algorithm.
