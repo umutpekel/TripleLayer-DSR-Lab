@@ -129,4 +129,8 @@ M_{m,b} = {
 
 h_{m,b} = Hash(M_{m,b})
 
-See [`docs/Algorithm1_Monthly_Settlement.md`](docs/Algorithm1_Monthly_Settlement.md).
+#Related Documentation
+
+See:
+
+docs/Algorithm1_Monthly_Settlement.md
